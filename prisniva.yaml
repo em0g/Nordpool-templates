@@ -1,0 +1,52 @@
+template:
+  - sensor:
+      - name: "Nordpool Prisnivå"
+        unique_id: nordpool_price_level
+        icon: mdi:lightning-bolt
+        # ----------  Jinja-logik för tillståndet  ----------
+        state: >
+          {% set entity = 'sensor.nordpool_kwh_se3_sek_3_10_025' %}
+          {% set price  = states(entity) | float(0) %}
+
+          {# ----- hämta dagens 24 priser (HACS = today, Core = raw_today) ----- #}
+          {% set today = state_attr(entity, 'today') %}
+          {% if today is none %}
+            {% set raw = state_attr(entity, 'raw_today') | default([]) %}
+            {% set today = raw | map(attribute='price') | list %}
+          {% endif %}
+
+          {# ----- om data saknas -> unknown ----- #}
+          {% if not today %}
+            unknown
+          {% else %}
+            {% set avg  = (today | sum(start=0)) / (today | length) %}
+            {% set diff = (price / avg) * 100 %}
+            {# ----- tre nivåer: CHEAP / NORMAL / EXPENSIVE ----- #}
+            {% if   diff <=  90 %}  CHEAP
+            {% elif diff >= 115 %}  EXPENSIVE
+            {% else %}              NORMAL
+            {% endif %}
+          {% endif %}
+        # ----------  Extra attribut  ----------
+        attributes:
+          current_price: >
+            {% set entity = 'sensor.nordpool_kwh_se3_sek_3_10_025' %}
+            {{ states(entity) | float(0) }}
+          avg_price_today: >
+            {% set entity = 'sensor.nordpool_kwh_se3_sek_3_10_025' %}
+            {% set today = state_attr(entity, 'today')
+               if state_attr(entity, 'today') is not none
+               else (state_attr(entity, 'raw_today') | default([]) | map(attribute='price') | list) %}
+            {{ ((today | sum(start=0)) / (today|length)) | round(3) if today else none }}
+          difference_percent: >
+            {% set entity = 'sensor.nordpool_kwh_se3_sek_3_10_025' %}
+            {% set price  = states(entity) | float(0) %}
+            {% set today  = state_attr(entity, 'today')
+               if state_attr(entity, 'today') is not none
+               else (state_attr(entity, 'raw_today') | default([]) | map(attribute='price') | list) %}
+            {% if today %}
+              {% set avg = (today | sum(start=0)) / (today | length) %}
+              {{ ((price / avg) * 100) | round(1) }}
+            {% else %}
+              none
+            {% endif %}
