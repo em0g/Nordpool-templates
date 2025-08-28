@@ -1,0 +1,136 @@
+type: custom:apexcharts-card
+graph_span: 48h
+span:
+  start: day
+header:
+  title: Elpris 24-48h
+  show: true
+now:
+  show: true
+  label: Nu
+  color: red
+stacked: true
+apex_config:
+  xaxis:
+    type: datetime
+    tickPlacement: "on"
+  yaxis:
+    decimalsInFloat: 3
+    labels:
+      formatter: |
+        EVAL:function (v){ return (v ?? 0).toFixed(3) + ' kr'; }
+  plotOptions:
+    bar:
+      columnWidth: 72%
+      borderRadius: 3
+  stroke:
+    width: 0
+  chart:
+    animations:
+      enabled: false
+  legend:
+    show: true
+    formatter: |
+      EVAL:(function (seriesName, opts) {
+        try {
+          const s = opts.w.config.series[opts.seriesIndex];
+          const data = (s && s.data) ? s.data : [];
+          const getY = (d) => Array.isArray(d) ? d[1] : (d && (d.y ?? d.value));
+
+          if (seriesName === 'Medelpris') {
+            const first = data[0];
+            const y = first ? getY(first) : null;
+            return 'Medelpris: ' + (y != null ? Number(y).toFixed(1) : '–') + ' SEK/kWh';
+          }
+
+          let max = null;
+          for (const d of data) {
+            const v = getY(d);
+            if (v == null) continue;
+            if (max == null || v > max) max = v;
+          }
+          if (max == null && opts.w.globals.series && opts.w.globals.series[opts.seriesIndex]) {
+            for (const v of opts.w.globals.series[opts.seriesIndex]) {
+              if (v == null) continue;
+              if (max == null || v > max) max = v;
+            }
+          }
+          return seriesName + ' max: ' + (max != null ? Number(max).toFixed(2) : '–') + ' SEK/kWh';
+        } catch (e) { return seriesName; }
+      })
+  tooltip:
+    shared: false
+    intersect: false
+    custom: |
+      EVAL:(function({series, seriesIndex, dataPointIndex, w}){
+        // hitta timestamp för denna index (från första serie som har X-värde)
+        let ts = null;
+        for (let i=0;i<w.globals.seriesX.length;i++){
+          const x = w.globals.seriesX[i] && w.globals.seriesX[i][dataPointIndex];
+          if (x != null) { ts = x; break; }
+        }
+        // hitta rätt serie (den som har ett värde på den här timmen)
+        let label = null, val = null, color = null;
+        for (let i=0;i<w.config.series.length;i++){
+          const v = w.globals.series[i] && w.globals.series[i][dataPointIndex];
+          if (v != null) { label = w.config.series[i].name; val = v; color = w.config.series[i].color; break; }
+        }
+        const dateStr = ts ? new Date(ts).toLocaleString(undefined, {year:'numeric', month:'short', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false}) : '';
+        const vStr = (val != null) ? (Number(val).toFixed(3) + ' SEK/kWh') : '–';
+        const dot = color ? '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+color+';margin-right:6px;"></span>' : '';
+        return '<div style="padding:6px 8px">'
+             +   '<div style="opacity:.7">'+dateStr+'</div>'
+             +   '<div style="margin-top:4px">'+dot+(label||'')+': <b>'+vStr+'</b></div>'
+             + '</div>';
+      })
+series:
+  - entity: sensor.nordpool_48h_prisnivaer
+    name: Billigt
+    type: column
+    color: "#00A000"
+    data_generator: |
+      const a = entity.attributes;
+      const cheap = Array.isArray(a.cheap)?a.cheap:[];
+      const normal = Array.isArray(a.normal)?a.normal:[];
+      const expensive = Array.isArray(a.expensive)?a.expensive:[];
+      const map = new Map();
+      [...cheap, ...normal, ...expensive].forEach(([ts,v]) => map.set(ts, v));
+      const allTs = Array.from(map.keys()).sort((x,y)=>x-y);
+      const has = new Set(cheap.map(([ts])=>ts));
+      return allTs.map(ts => has.has(ts) ? [ts, map.get(ts)] : [ts, null]);
+  - entity: sensor.nordpool_48h_prisnivaer
+    name: Normal
+    type: column
+    color: "#FFD700"
+    data_generator: |
+      const a = entity.attributes;
+      const cheap = Array.isArray(a.cheap)?a.cheap:[];
+      const normal = Array.isArray(a.normal)?a.normal:[];
+      const expensive = Array.isArray(a.expensive)?a.expensive:[];
+      const map = new Map();
+      [...cheap, ...normal, ...expensive].forEach(([ts,v]) => map.set(ts, v));
+      const allTs = Array.from(map.keys()).sort((x,y)=>x-y);
+      const has = new Set(normal.map(([ts])=>ts));
+      return allTs.map(ts => has.has(ts) ? [ts, map.get(ts)] : [ts, null]);
+  - entity: sensor.nordpool_48h_prisnivaer
+    name: Dyrt
+    type: column
+    color: "#FF4500"
+    data_generator: |
+      const a = entity.attributes;
+      const cheap = Array.isArray(a.cheap)?a.cheap:[];
+      const normal = Array.isArray(a.normal)?a.normal:[];
+      const expensive = Array.isArray(a.expensive)?a.expensive:[];
+      const map = new Map();
+      [...cheap, ...normal, ...expensive].forEach(([ts,v]) => map.set(ts, v));
+      const allTs = Array.from(map.keys()).sort((x,y)=>x-y);
+      const has = new Set(expensive.map(([ts])=>ts));
+      return allTs.map(ts => has.has(ts) ? [ts, map.get(ts)] : [ts, null]);
+  - entity: sensor.nordpool_48h_prisnivaer
+    name: Medelpris
+    type: line
+    color: "#0066FF"
+    stroke_width: 2
+    data_generator: |
+      const a = entity.attributes.avg_line || [];
+      return Array.isArray(a) ? a : [];
