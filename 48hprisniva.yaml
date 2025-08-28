@@ -1,0 +1,82 @@
+template:
+  - sensor:
+      - name: "Nordpool 48h prisnivåer"
+        unique_id: nordpool_48h_price_levels
+        state: >
+          {% set ent = 'sensor.nordpool_kwh_se3_sek_3_10_025' %}
+          {% set all = (state_attr(ent, 'raw_today') or []) + (state_attr(ent, 'raw_tomorrow') or []) %}
+          {{ 'ready' if all | length > 0 else 'unknown' }}
+        attributes:
+          avg_all: >
+            {% set ent = 'sensor.nordpool_kwh_se3_sek_3_10_025' %}
+            {% set all = (state_attr(ent, 'raw_today') or []) + (state_attr(ent, 'raw_tomorrow') or []) %}
+            {% if all %}
+              {% set vals = all | map(attribute='value') | map('float') | list %}
+              {{ ((vals | sum) / (vals | length)) | round(5) }}
+            {% else %} null {% endif %}
+
+          cheap: >
+            {% set ent = 'sensor.nordpool_kwh_se3_sek_3_10_025' %}
+            {% set all = (state_attr(ent, 'raw_today') or []) + (state_attr(ent, 'raw_tomorrow') or []) %}
+            {% if all %}
+              {% set vals = all | map(attribute='value') | map('float') | list %}
+              {% set avg = (vals | sum) / (vals | length) %}
+              {% set cheap_max = avg * 0.90 %}
+              {% set ns = namespace(arr=[]) %}
+              {% for p in all %}
+                {% set ts = (as_timestamp(p['start']) * 1000) | int %}
+                {% set val = p['value'] | float %}
+                {% if val <= cheap_max %}
+                  {% set ns.arr = ns.arr + [[ts, val]] %}
+                {% endif %}
+              {% endfor %}
+              {{ ns.arr | tojson }}
+            {% else %} [] {% endif %}
+
+          normal: >
+            {% set ent = 'sensor.nordpool_kwh_se3_sek_3_10_025' %}
+            {% set all = (state_attr(ent, 'raw_today') or []) + (state_attr(ent, 'raw_tomorrow') or []) %}
+            {% if all %}
+              {% set vals = all | map(attribute='value') | map('float') | list %}
+              {% set avg = (vals | sum) / (vals | length) %}
+              {% set cheap_max = avg * 0.90 %}
+              {% set exp_min = avg * 1.15 %}
+              {% set ns = namespace(arr=[]) %}
+              {% for p in all %}
+                {% set ts = (as_timestamp(p['start']) * 1000) | int %}
+                {% set val = p['value'] | float %}
+                {% if val > cheap_max and val < exp_min %}
+                  {% set ns.arr = ns.arr + [[ts, val]] %}
+                {% endif %}
+              {% endfor %}
+              {{ ns.arr | tojson }}
+            {% else %} [] {% endif %}
+
+          expensive: >
+            {% set ent = 'sensor.nordpool_kwh_se3_sek_3_10_025' %}
+            {% set all = (state_attr(ent, 'raw_today') or []) + (state_attr(ent, 'raw_tomorrow') or []) %}
+            {% if all %}
+              {% set vals = all | map(attribute='value') | map('float') | list %}
+              {% set avg = (vals | sum) / (vals | length) %}
+              {% set exp_min = avg * 1.15 %}
+              {% set ns = namespace(arr=[]) %}
+              {% for p in all %}
+                {% set ts = (as_timestamp(p['start']) * 1000) | int %}
+                {% set val = p['value'] | float %}
+                {% if val >= exp_min %}
+                  {% set ns.arr = ns.arr + [[ts, val]] %}
+                {% endif %}
+              {% endfor %}
+              {{ ns.arr | tojson }}
+            {% else %} [] {% endif %}
+
+          avg_line: >
+            {% set ent = 'sensor.nordpool_kwh_se3_sek_3_10_025' %}
+            {% set all = (state_attr(ent, 'raw_today') or []) + (state_attr(ent, 'raw_tomorrow') or []) %}
+            {% if all %}
+              {% set vals = all | map(attribute='value') | map('float') | list %}
+              {% set avg = (vals | sum) / (vals | length) %}
+              {% set start = (as_timestamp(all[0]['start']) * 1000) | int %}
+              {% set end = ((as_timestamp(all[-1]['start']) + 3600) * 1000) | int %}
+              {{ [[start, avg], [end, avg]] | tojson }}
+            {% else %} [] {% endif %}
