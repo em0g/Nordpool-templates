@@ -1,0 +1,63 @@
+blueprint:
+  name: Elprisnivå-kontroll (Nordpool)
+  description: Utför åtgärder när elpriset passerar vald tröskel baserat på Nordpool-nivåerna (CHEAP, NORMAL, EXPENSIVE).
+  domain: automation
+  input:
+    price_level_sensor:
+      name: Nordpool Prisnivå-sensor
+      description: Välj din sensor, t.ex. sensor.nordpool_prisniva
+      selector:
+        entity:
+          domain: sensor
+    threshold:
+      name: Tröskel
+      description: Nivå som delar "lågt" (≤) från "högt" (>).
+      default: "NORMAL"
+      selector:
+        select:
+          options:
+            - label: Billig
+              value: CHEAP
+            - label: Normal
+              value: NORMAL
+            - label: Dyr
+              value: EXPENSIVE
+    below_actions:
+      name: Åtgärder vid ≤ tröskel
+      description: Körs när nivån går till eller under tröskeln.
+      default: []
+      selector:
+        action: {}
+    above_actions:
+      name: Åtgärder vid > tröskel
+      description: Körs när nivån går över tröskeln.
+      default: []
+      selector:
+        action: {}
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  - platform: state
+    entity_id: !input price_level_sensor
+
+action:
+  - variables:
+      levels: "{{ ['CHEAP','NORMAL','EXPENSIVE'] }}"
+      old_level: "{{ (trigger.from_state.state | upper) if trigger.from_state is not none else none }}"
+      new_level: "{{ (trigger.to_state.state | upper) if trigger.to_state is not none else none }}"
+      threshold: !input threshold
+
+  - choose:
+      - conditions:
+          # Säkerställ giltiga nivåer och gränspassage neråt (till eller under tröskel)
+          - "{{ old_level in levels and new_level in levels }}"
+          - "{{ levels.index(new_level) <= levels.index(threshold) and levels.index(old_level) > levels.index(threshold) }}"
+        sequence: !input below_actions
+
+      - conditions:
+          # Säkerställ giltiga nivåer och gränspassage uppåt (över tröskel)
+          - "{{ old_level in levels and new_level in levels }}"
+          - "{{ levels.index(old_level) <= levels.index(threshold) and levels.index(new_level) > levels.index(threshold) }}"
+        sequence: !input above_actions
