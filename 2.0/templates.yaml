@@ -1,0 +1,421 @@
+template:
+
+  - trigger:
+      - trigger: time_pattern
+        minutes: /30
+      - trigger: homeassistant
+        event: start
+    action:
+      - action: nordpool.get_prices_for_date
+        data:
+          config_entry: 01K4NGWKRNCEJ43FYVXBS2KGN3
+          date: "{{ now().date() - timedelta(days=2) }}"
+          areas: SE3
+          currency: SEK
+        response_variable: two_days_ago_price
+      - action: nordpool.get_prices_for_date
+        data:
+          config_entry: 01K4NGWKRNCEJ43FYVXBS2KGN3
+          date: "{{ now().date() - timedelta(days=1) }}"
+          areas: SE3
+          currency: SEK
+        response_variable: yesterday_price
+      - action: nordpool.get_prices_for_date
+        data:
+          config_entry: 01K4NGWKRNCEJ43FYVXBS2KGN3
+          date: "{{ now().date() }}"
+          areas: SE3
+          currency: SEK
+        response_variable: today_price
+      - action: nordpool.get_prices_for_date
+        data:
+          config_entry: 01K4NGWKRNCEJ43FYVXBS2KGN3
+          date: "{{ now().date() + timedelta(days=1) }}"
+          areas: SE3
+          currency: SEK
+        response_variable: tomorrow_price
+        
+
+    sensor:
+      - name: nordpool_data
+        unique_id: se3_nordpool_data
+        state: "{{ states('sensor.nord_pool_se3_current_price') }}"
+        attributes:
+          data: >
+            {% set data = namespace(prices=[]) %}
+            {% for state in yesterday_price['SE3'] %}
+              {% set data.prices = data.prices + [{'start':state.start, 'end':state.end, 'price': ((state.price / 1000) | float | round(3, 'common'))}] %}
+            {% endfor %}
+            {% for state in today_price['SE3'] %}
+              {% set data.prices = data.prices + [{'start':state.start, 'end':state.end, 'price': ((state.price / 1000) | float | round(3, 'common'))}] %}
+            {% endfor %}
+            {% set tomorrow_or_2days_ago = [] %}
+            {% if (tomorrow_price | default({})).get('SE3', []) | length == 0 %}
+              {% set tomorrow_or_2days_ago = (two_days_ago_price) %}
+            {% else %}
+              {% set tomorrow_or_2days_ago = (tomorrow_price) %}
+            {% endif %}  
+            {% for state in tomorrow_or_2days_ago['SE3'] %}
+              {% set data.prices = data.prices + [{'start':state.start, 'end':state.end, 'price': ((state.price / 1000) | float | round(3, 'common'))}] %}
+            {% endfor %}
+            {{data.prices | sort(attribute='start') | tojson}}
+            
+            
+  - sensor:
+      - name: nordpool_price_level
+        unique_id: se3_nordpool_price_level
+        state: >-
+          {% set raw = state_attr('sensor.nordpool_data','data') %}
+          {% set data = (raw | from_json) if (raw is string) else raw %}
+          {% if not (data is sequence and (data is not string) and (data|length > 0)) %}
+            unknown
+          {% else %}
+            {# Samla alla priser #}
+            {% set ns = namespace(prices=[]) %}
+            {% for s in data %}
+              {% set p = (s.price if s.price is defined else s['price']) | float %}
+              {% set ns.prices = ns.prices + [p] %}
+            {% endfor %}
+            {% set n = ns.prices|length %}
+            {% set ps = ns.prices | sort %}
+            {# 35-35-30 → percentiler ca 35% & 70% #}
+            {% set i35 = ((n-1)*0.35) | round(0,'floor') | int %}
+            {% set i70 = ((n-1)*0.70) | round(0,'floor') | int %}
+            {% set thr_cheap_max  = ps[i35] %}
+            {% set thr_normal_max = ps[i70] %}
+            {% set current = states('sensor.nord_pool_se3_current_price') | float(0) %}
+            {% if current <= thr_cheap_max %}
+              CHEAP
+            {% elif current <= thr_normal_max %}
+              NORMAL
+            {% else %}
+              EXPENSIVE
+            {% endif %}
+          {% endif %}
+        attributes:
+          current_price: "{{ states('sensor.nord_pool_se3_current_price') | float(0) }}"
+          thresholds: >-
+            {% set raw = state_attr('sensor.nordpool_data','data') %}
+            {% set data = (raw | from_json) if (raw is string) else raw %}
+            {% if not (data is sequence and (data is not string) and (data|length > 0)) %}
+              {{ {'cheap_max': none, 'normal_max': none} }}
+            {% else %}
+              {% set ns = namespace(prices=[]) %}
+              {% for s in data %}
+                {% set ns.prices = ns.prices + [ ((s.price if s.price is defined else s['price']) | float) ] %}
+              {% endfor %}
+              {% set n = ns.prices|length %}
+              {% set ps = ns.prices | sort %}
+              {% set i35 = ((n-1)*0.35) | round(0,'floor') | int %}
+              {% set i70 = ((n-1)*0.70) | round(0,'floor') | int %}
+              {{ {
+                'cheap_max': (ps[i35] | round(3, 'common')),
+                'normal_max': (ps[i70] | round(3, 'common'))
+              } }}
+            {% endif %}
+          buckets: >-
+            {% set raw = state_attr('sensor.nordpool_data','data') %}
+            {% set data = (raw | from_json) if (raw is string) else raw %}
+            {% if not (data is sequence and (data is not string) and (data|length > 0)) %}
+              {{ {'CHEAP': [], 'NORMAL': [], 'EXPENSIVE': []} }}
+            {% else %}
+              {# Trösklar #}
+              {% set ns = namespace(prices=[]) %}
+              {% for s in data %}
+                {% set ns.prices = ns.prices + [ ((s.price if s.price is defined else s['price']) | float) ] %}
+              {% endfor %}
+              {% set n = ns.prices|length %}
+              {% set ps = ns.prices | sort %}
+              {% set i35 = ((n-1)*0.35) | round(0,'floor') | int %}
+              {% set i70 = ((n-1)*0.70) | round(0,'floor') | int %}
+              {% set thr_cheap_max  = ps[i35] %}
+              {% set thr_normal_max = ps[i70] %}
+
+              {# Bucketa alla datapunkter #}
+              {% set b = namespace(cheap=[], normal=[], expensive=[]) %}
+              {% for s in data %}
+                {% set p = (s.price if s.price is defined else s['price']) | float %}
+                {% if p <= thr_cheap_max %}
+                  {% set b.cheap = b.cheap + [s] %}
+                {% elif p <= thr_normal_max %}
+                  {% set b.normal = b.normal + [s] %}
+                {% else %}
+                  {% set b.expensive = b.expensive + [s] %}
+                {% endif %}
+              {% endfor %}
+              {{ {'CHEAP': b.cheap, 'NORMAL': b.normal, 'EXPENSIVE': b.expensive} }}
+            {% endif %}
+          buckets_ts: >-
+            {% set raw = state_attr('sensor.nordpool_data','data') %}
+            {% set data = (raw | from_json) if (raw is string) else raw %}
+            {% if not (data is sequence and (data is not string) and (data|length > 0)) %}
+              {{ {'CHEAP': [], 'NORMAL': [], 'EXPENSIVE': []} }}
+            {% else %}
+              {% set ns = namespace(prices=[]) %}
+              {% for s in data %}
+                {% set ns.prices = ns.prices + [ ((s.price if s.price is defined else s['price']) | float) ] %}
+              {% endfor %}
+              {% set n = ns.prices|length %}
+              {% set ps = ns.prices | sort %}
+              {% set i35 = ((n-1)*0.35) | round(0,'floor') | int %}
+              {% set i70 = ((n-1)*0.70) | round(0,'floor') | int %}
+              {% set thr_cheap_max  = ps[i35] %}
+              {% set thr_normal_max = ps[i70] %}
+              {% set b = namespace(cheap=[], normal=[], expensive=[]) %}
+              {% for s in data %}
+                {% set p = (s.price if s.price is defined else s['price']) | float %}
+                {% set ts = as_timestamp(as_datetime(s.start)) * 1000 %}
+                {% if p <= thr_cheap_max %}
+                  {% set b.cheap = b.cheap + [[ts, p]] %}
+                {% elif p <= thr_normal_max %}
+                  {% set b.normal = b.normal + [[ts, p]] %}
+                {% else %}
+                  {% set b.expensive = b.expensive + [[ts, p]] %}
+                {% endif %}
+              {% endfor %}
+              {{ {'CHEAP': b.cheap, 'NORMAL': b.normal, 'EXPENSIVE': b.expensive} }}
+            {% endif %}
+
+
+  - sensor:
+      - name: nordpool_price_level_hourly
+        unique_id: se3_nordpool_price_level_hourly
+        state: >-
+          {% set raw = state_attr('sensor.nordpool_data','data') %}
+          {% set data = (raw | from_json) if (raw is string) else raw %}
+          {% if not (data is sequence and (data is not string) and (data|length>0)) %}
+            unknown
+          {% else %}
+            {# 1) Bygg (hour, price)-lista med namespace #}
+            {% set ns = namespace(items=[]) %}
+            {% for s in data %}
+              {% set p  = (s.price if s.price is defined else s['price']) | float %}
+              {% set ts = as_timestamp(as_datetime(s.start)) | int %}
+              {% set hour = ts - (ts % 3600) %}
+              {% set ns.items = ns.items + [ {'hour':hour, 'price':p} ] %}
+            {% endfor %}
+            {% set items = ns.items | sort(attribute='hour') %}
+
+            {# 2) Timvisa medel med namespace-ackumulator #}
+            {% set acc = namespace(cur=None, sum=0.0, cnt=0, hourly=[]) %}
+            {% for it in items %}
+              {% if acc.cur is none %}{% set acc.cur = it.hour %}{% endif %}
+              {% if it.hour != acc.cur %}
+                {% set avg = (acc.sum / acc.cnt) %}
+                {% set acc.hourly = acc.hourly + [ {'hour':acc.cur, 'price': (avg | round(3,'common'))} ] %}
+                {% set acc.cur = it.hour %}
+                {% set acc.sum = 0.0 %}{% set acc.cnt = 0 %}
+              {% endif %}
+              {% set acc.sum = acc.sum + it.price %}
+              {% set acc.cnt = acc.cnt + 1 %}
+            {% endfor %}
+            {% if acc.cur is not none and acc.cnt>0 %}
+              {% set avg = (acc.sum / acc.cnt) %}
+              {% set acc.hourly = acc.hourly + [ {'hour':acc.cur, 'price': (avg | round(3,'common'))} ] %}
+            {% endif %}
+
+            {% set hourly = acc.hourly %}
+            {% set n = hourly|length %}
+            {% if n==0 %}
+              unknown
+            {% else %}
+              {# 3) Trösklar 35/70 på timmedel #}
+              {% set ps = hourly | map(attribute='price') | map('float') | list | sort %}
+              {% set i35 = ((n-1)*0.35) | round(0,'floor') | int %}
+              {% set i70 = ((n-1)*0.70) | round(0,'floor') | int %}
+              {% set thr_cheap_max  = ps[i35] %}
+              {% set thr_normal_max = ps[i70] %}
+
+              {# 4) Nivå = nuvarande timmes medel #}
+              {% set now_ts = as_timestamp(utcnow()) | int %}
+              {% set cur_hour = now_ts - (now_ts % 3600) %}
+              {% set cur_avg = none %}
+              {% for h in hourly %}
+                {% if h.hour == cur_hour %}
+                  {% set cur_avg = h.price | float %}
+                {% endif %}
+              {% endfor %}
+              {% if cur_avg is none %}
+                unknown
+              {% elif cur_avg <= thr_cheap_max %}
+                CHEAP
+              {% elif cur_avg <= thr_normal_max %}
+                NORMAL
+              {% else %}
+                EXPENSIVE
+              {% endif %}
+            {% endif %}
+          {% endif %}
+        attributes:
+          current_hour_avg: >-
+            {% set raw = state_attr('sensor.nordpool_data','data') %}
+            {% set data = (raw | from_json) if (raw is string) else raw %}
+            {% if not (data is sequence and (data is not string)) %}{{ none }}
+            {% else %}
+              {% set ns = namespace(items=[]) %}
+              {% for s in data %}
+                {% set p  = (s.price if s.price is defined else s['price']) | float %}
+                {% set ts = as_timestamp(as_datetime(s.start)) | int %}
+                {% set hour = ts - (ts % 3600) %}
+                {% if hour == (as_timestamp(utcnow())|int - (as_timestamp(utcnow())|int % 3600)) %}
+                  {% set ns.items = ns.items + [p] %}
+                {% endif %}
+              {% endfor %}
+              {% if ns.items|length>0 %}
+                {{ ( (ns.items|sum) / (ns.items|length) ) | round(3,'common') }}
+              {% else %}{{ none }}{% endif %}
+            {% endif %}
+          thresholds: >-
+            {% set raw = state_attr('sensor.nordpool_data','data') %}
+            {% set data = (raw | from_json) if (raw is string) else raw %}
+            {% if not (data is sequence and (data is not string) and (data|length>0)) %}
+              {{ {'cheap_max': none, 'normal_max': none} }}
+            {% else %}
+              {% set ns = namespace(items=[]) %}
+              {% for s in data %}
+                {% set p  = (s.price if s.price is defined else s['price']) | float %}
+                {% set ts = as_timestamp(as_datetime(s.start)) | int %}
+                {% set hour = ts - (ts % 3600) %}
+                {% set ns.items = ns.items + [ {'hour':hour, 'price':p} ] %}
+              {% endfor %}
+              {% set items = ns.items | sort(attribute='hour') %}
+              {% set acc = namespace(cur=None, sum=0.0, cnt=0, hourly=[]) %}
+              {% for it in items %}
+                {% if acc.cur is none %}{% set acc.cur = it.hour %}{% endif %}
+                {% if it.hour != acc.cur %}
+                  {% set avg = (acc.sum / acc.cnt) %}
+                  {% set acc.hourly = acc.hourly + [ (avg | round(3,'common')) ] %}
+                  {% set acc.cur = it.hour %}
+                  {% set acc.sum = 0.0 %}{% set acc.cnt = 0 %}
+                {% endif %}
+                {% set acc.sum = acc.sum + it.price %}
+                {% set acc.cnt = acc.cnt + 1 %}
+              {% endfor %}
+              {% if acc.cur is not none and acc.cnt>0 %}
+                {% set acc.hourly = acc.hourly + [ ((acc.sum / acc.cnt) | round(3,'common')) ] %}
+              {% endif %}
+              {% set ps = acc.hourly | map('float') | list | sort %}
+              {% set n = ps|length %}
+              {% if n==0 %}
+                {{ {'cheap_max': none, 'normal_max': none} }}
+              {% else %}
+                {% set i35 = ((n-1)*0.35) | round(0,'floor') | int %}
+                {% set i70 = ((n-1)*0.70) | round(0,'floor') | int %}
+                {{ {'cheap_max': (ps[i35] | round(3,'common')),
+                     'normal_max': (ps[i70] | round(3,'common'))} }}
+              {% endif %}
+            {% endif %}
+          buckets: >-
+            {% set raw = state_attr('sensor.nordpool_data','data') %}
+            {% set data = (raw | from_json) if (raw is string) else raw %}
+            {% if not (data is sequence and (data is not string) and (data|length>0)) %}
+              {{ {'CHEAP': [], 'NORMAL': [], 'EXPENSIVE': []} }}
+            {% else %}
+              {# --- Timvisa medel --- #}
+              {% set ns = namespace(items=[]) %}
+              {% for s in data %}
+                {% set p  = (s.price if s.price is defined else s['price']) | float %}
+                {% set ts = as_timestamp(as_datetime(s.start)) | int %}
+                {% set hour = ts - (ts % 3600) %}
+                {% set ns.items = ns.items + [ {'hour':hour, 'price':p} ] %}
+              {% endfor %}
+              {% set items = ns.items | sort(attribute='hour') %}
+              {% set acc = namespace(cur=None, sum=0.0, cnt=0, hourly=[]) %}
+              {% for it in items %}
+                {% if acc.cur is none %}{% set acc.cur = it.hour %}{% endif %}
+                {% if it.hour != acc.cur %}
+                  {% set avg = (acc.sum / acc.cnt) %}
+                  {% set acc.hourly = acc.hourly + [ {'hour':acc.cur, 'price': (avg | round(3,'common'))} ] %}
+                  {% set acc.cur = it.hour %}{% set acc.sum = 0.0 %}{% set acc.cnt = 0 %}
+                {% endif %}
+                {% set acc.sum = acc.sum + it.price %}
+                {% set acc.cnt = acc.cnt + 1 %}
+              {% endfor %}
+              {% if acc.cur is not none and acc.cnt>0 %}
+                {% set avg = (acc.sum / acc.cnt) %}
+                {% set acc.hourly = acc.hourly + [ {'hour':acc.cur, 'price': (avg | round(3,'common'))} ] %}
+              {% endif %}
+              {% set hourly = acc.hourly %}
+              {% set n = hourly|length %}
+              {% if n==0 %}
+                {{ {'CHEAP': [], 'NORMAL': [], 'EXPENSIVE': []} }}
+              {% else %}
+                {# --- Trösklar på timmedel --- #}
+                {% set ps = hourly | map(attribute='price') | map('float') | list | sort %}
+                {% set i35 = ((n-1)*0.35) | round(0,'floor') | int %}
+                {% set i70 = ((n-1)*0.70) | round(0,'floor') | int %}
+                {% set thr_cheap_max  = ps[i35] %}
+                {% set thr_normal_max = ps[i70] %}
+                {# --- Bucketisera --- #}
+                {% set b = namespace(cheap=[], normal=[], expensive=[]) %}
+                {% for h in hourly %}
+                  {% set start = h.hour | timestamp_custom('%Y-%m-%dT%H:%M:%S+00:00', False) %}
+                  {% set end   = (h.hour + 3600) | timestamp_custom('%Y-%m-%dT%H:%M:%S+00:00', False) %}
+                  {% if h.price | float <= thr_cheap_max %}
+                    {% set b.cheap = b.cheap + [ {'start':start, 'end':end, 'price': h.price} ] %}
+                  {% elif h.price | float <= thr_normal_max %}
+                    {% set b.normal = b.normal + [ {'start':start, 'end':end, 'price': h.price} ] %}
+                  {% else %}
+                    {% set b.expensive = b.expensive + [ {'start':start, 'end':end, 'price': h.price} ] %}
+                  {% endif %}
+                {% endfor %}
+                {{ {'CHEAP': b.cheap, 'NORMAL': b.normal, 'EXPENSIVE': b.expensive} }}
+              {% endif %}
+            {% endif %}
+
+          buckets_ts: >-
+            {% set raw = state_attr('sensor.nordpool_data','data') %}
+            {% set data = (raw | from_json) if (raw is string) else raw %}
+            {% if not (data is sequence and (data is not string) and (data|length>0)) %}
+              {{ {'CHEAP': [], 'NORMAL': [], 'EXPENSIVE': []} }}
+            {% else %}
+              {# --- Timvisa medel --- #}
+              {% set ns = namespace(items=[]) %}
+              {% for s in data %}
+                {% set p  = (s.price if s.price is defined else s['price']) | float %}
+                {% set ts = as_timestamp(as_datetime(s.start)) | int %}
+                {% set hour = ts - (ts % 3600) %}
+                {% set ns.items = ns.items + [ {'hour':hour, 'price':p} ] %}
+              {% endfor %}
+              {% set items = ns.items | sort(attribute='hour') %}
+              {% set acc = namespace(cur=None, sum=0.0, cnt=0, hourly=[]) %}
+              {% for it in items %}
+                {% if acc.cur is none %}{% set acc.cur = it.hour %}{% endif %}
+                {% if it.hour != acc.cur %}
+                  {% set avg = (acc.sum / acc.cnt) %}
+                  {% set acc.hourly = acc.hourly + [ {'hour':acc.cur, 'price': (avg | round(3,'common'))} ] %}
+                  {% set acc.cur = it.hour %}{% set acc.sum = 0.0 %}{% set acc.cnt = 0 %}
+                {% endif %}
+                {% set acc.sum = acc.sum + it.price %}
+                {% set acc.cnt = acc.cnt + 1 %}
+              {% endfor %}
+              {% if acc.cur is not none and acc.cnt>0 %}
+                {% set avg = (acc.sum / acc.cnt) %}
+                {% set acc.hourly = acc.hourly + [ {'hour':acc.cur, 'price': (avg | round(3,'common'))} ] %}
+              {% endif %}
+              {% set hourly = acc.hourly %}
+              {% set n = hourly|length %}
+              {% if n==0 %}
+                {{ {'CHEAP': [], 'NORMAL': [], 'EXPENSIVE': []} }}
+              {% else %}
+                {# --- Trösklar på timmedel --- #}
+                {% set ps = hourly | map(attribute='price') | map('float') | list | sort %}
+                {% set i35 = ((n-1)*0.35) | round(0,'floor') | int %}
+                {% set i70 = ((n-1)*0.70) | round(0,'floor') | int %}
+                {% set thr_cheap_max  = ps[i35] %}
+                {% set thr_normal_max = ps[i70] %}
+                {# --- Bucketisera som [ts_ms, pris] --- #}
+                {% set b = namespace(cheap=[], normal=[], expensive=[]) %}
+                {% for h in hourly %}
+                  {% set ts_ms = h.hour * 1000 %}
+                  {% if h.price | float <= thr_cheap_max %}
+                    {% set b.cheap = b.cheap + [ [ts_ms, h.price] ] %}
+                  {% elif h.price | float <= thr_normal_max %}
+                    {% set b.normal = b.normal + [ [ts_ms, h.price] ] %}
+                  {% else %}
+                    {% set b.expensive = b.expensive + [ [ts_ms, h.price] ] %}
+                  {% endif %}
+                {% endfor %}
+                {{ {'CHEAP': b.cheap, 'NORMAL': b.normal, 'EXPENSIVE': b.expensive} }}
+              {% endif %}
+            {% endif %}
