@@ -1,0 +1,99 @@
+type: custom:apexcharts-card
+header:
+  title: Elpris (CHEAP / NORMAL / EXPENSIVE)
+now:
+  show: true
+  label: Nu
+chart_type: scatter
+graph_span: 72h
+span:
+  start: minute
+  offset: "-24h"
+apex_config:
+  title:
+    text: Elpriser Nordpool
+  chart:
+    id: priceMain
+    type: rangeBar
+    animations:
+      enabled: false
+    toolbar:
+      show: true
+      tools:
+        selection: true
+        zoom: true
+        zoomin: true
+        zoomout: true
+        pan: true
+        reset: true
+      autoSelected: zoom
+    zoom:
+      enabled: true
+      type: x
+      autoScaleYaxis: true
+  xaxis:
+    type: datetime
+    labels:
+      datetimeUTC: false
+      datetimeFormatter:
+        year: yyyy
+        month: dd MMM
+        day: dd MMM
+        hour: HH:mm
+  yaxis:
+    decimalsInFloat: 3
+  plotOptions:
+    bar:
+      columnWidth: 100%
+  dataLabels:
+    enabled: false
+  legend:
+    show: true
+  tooltip:
+    enabled: true
+    shared: false
+    intersect: false
+    followCursor: true
+    custom: |
+      EVAL:function({ seriesIndex, dataPointIndex, w }) {
+        try {
+          var s  = w.globals.initialSeries[seriesIndex];
+          var dp = s.data[dataPointIndex];
+          if (!dp) return '';
+          var mid = (typeof dp.x !== 'undefined') ? dp.x : (Array.isArray(dp) ? dp[0] : undefined);
+          var price = Array.isArray(dp.y) ? Number(dp.y[1]||0) : Number(dp.y||0);
+          var cat   = dp.customData || '—';
+          var color = dp.fillColor || '#888';
+          // x är mitt i timmen → visa starttid (−30 min)
+          var startTs = mid ? mid - 30*60*1000 : undefined;
+          var time = startTs ? new Date(startTs).toLocaleString('sv-SE', {
+            day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', hour12:false
+          }) : '';
+          return '<div style="padding:8px 10px">'
+               +   '<div style="font-weight:700;color:'+color+'">'+cat+'</div>'
+               +   '<div>'+time+'</div>'
+               +   '<div><b>'+price.toFixed(3)+' kr/kWh</b></div>'
+               + '</div>';
+        } catch(e) { return ''; }
+      }
+series:
+  - entity: sensor.nordpool_price_level
+    name: Price
+    data_generator: |
+      const b = entity.attributes?.buckets_ts || {};
+      const out = [];
+      const H = 60*60*1000;
+      const push = (arr, color, cat) => {
+        (arr || []).forEach(([ts, p]) => out.push({
+          x: ts + H/2,            // mitt i timmen för perfekt align
+          y: [0, Number(p)],
+          fillColor: color,       // färg per stapel
+          strokeColor: color,
+          customData: cat         // CHEAP/NORMAL/EXPENSIVE till tooltip
+        }));
+      };
+      push(b.CHEAP,     '#13a365', 'CHEAP');      // grön
+      push(b.NORMAL,    '#f2c94c', 'NORMAL');     // gul
+      push(b.EXPENSIVE, '#eb5757', 'EXPENSIVE');  // röd
+      out.sort((a,b)=>a.x-b.x);
+      return out;
