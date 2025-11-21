@@ -1,0 +1,30 @@
+    sensor:
+      - name: Combined Nordpool Prices
+        unique_id: combined_nordpool_prices
+        state: "{{ now().isoformat() }}"
+        attributes:
+          data: >
+            {% set all = namespace(prices=[]) %}
+            {% set tp = today_price | default({}, true) %}
+            {% set tom = tomorrow_price | default({}, true) %}
+
+            {% if tp.get('SE3') %}
+              {% for item in tp['SE3'] %}
+                {% set all.prices = all.prices + [{
+                  'start_time': (item.start | as_datetime | as_local).isoformat(),
+                  'end_time': (item.end | as_datetime | as_local).isoformat(),
+                  'price_per_kwh': item.price / 1000
+                }] %}
+              {% endfor %}
+            {% endif %}
+
+            {% if tom.get('SE3') %}
+              {% for item in tom['SE3'] %}
+                {% set all.prices = all.prices + [{
+                  'start_time': (item.start | as_datetime | as_local).isoformat(),
+                  'end_time': (item.end | as_datetime | as_local).isoformat(),
+                  'price_per_kwh': item.price / 1000
+                }] %}
+              {% endfor %}
+            {% endif %}
+            {{ all.prices | sort(attribute='start_time') }}
