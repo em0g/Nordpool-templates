@@ -1,0 +1,149 @@
+# ---------------------------------------------------------------------------
+# Nordpool 3.0 – elpris och prisnivå (Billigt / Normalt / Dyrt)
+#
+# Skapar två sensorer:
+#   sensor.elpris       – aktuellt kvartspris (kr/kWh) + alla priser idag/imorgon
+#                         och de färdiga nivågränserna som attribut
+#   sensor.elpris_niva  – CHEAP / NORMAL / EXPENSIVE (för automationer/blueprint)
+#
+# Nivålogik (räknas på idag + imorgon, 15-minuterspriser):
+#   percentil 35 / 70  →  ca 35 % billigt, 35 % normalt, 30 % dyrt
+#   + golv:  under floor_price är det alltid Billigt
+#   + tak:   över ceiling_price är det alltid Dyrt
+#
+#   cheap_max  = min(max(p35, golv), tak)
+#   normal_max = max(min(p70, tak), cheap_max)
+#   pris <= cheap_max → CHEAP, pris <= normal_max → NORMAL, annars EXPENSIVE
+#
+# Installation: lägg filen som package, t.ex. i configuration.yaml
+#   homeassistant:
+#     packages:
+#       elpris: !include nordpool_templates.yaml
+# ---------------------------------------------------------------------------
+
+template:
+  - triggers:
+      - trigger: time_pattern
+        minutes: /15
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: event_template_reloaded
+    actions:
+      - variables:
+          # ---------- Inställningar ----------
+          config_entry: 01K4NGWKRNCEJ43FYVXBS2KGN3 # Nord Pool-integrationens config entry
+          area: SE3
+          currency: SEK
+          floor_price: 0.30 # kr/kWh – alltid Billigt under detta
+          ceiling_price: 2.00 # kr/kWh – alltid Dyrt över detta
+          cheap_pct: 0.35
+          normal_pct: 0.70
+      - action: nordpool.get_prices_for_date
+        data:
+          config_entry: "{{ config_entry }}"
+          date: "{{ now().date() }}"
+          areas: "{{ area }}"
+          currency: "{{ currency }}"
+        response_variable: today_price
+      - action: nordpool.get_prices_for_date
+        continue_on_error: true
+        data:
+          config_entry: "{{ config_entry }}"
+          date: "{{ now().date() + timedelta(days=1) }}"
+          areas: "{{ area }}"
+          currency: "{{ currency }}"
+        response_variable: tomorrow_price
+      - variables:
+          # [[start_epoch_s, pris_kr_per_kwh], ...] sorterat på tid
+          pts: >
+            {% set ns = namespace(out=[]) %}
+            {% for resp in [today_price | default({}, true), tomorrow_price | default({}, true)] %}
+              {% for p in resp.get(area, []) %}
+                {% set ns.out = ns.out + [[as_timestamp(p.start) | int, (p.price / 1000) | round(4)]] %}
+              {% endfor %}
+            {% endfor %}
+            {{ ns.out | sort }}
+          th: >
+            {% set ps = pts | map(attribute=1) | list | sort %}
+            {% set n = ps | count %}
+            {% if n == 0 %}
+              {{ {} }}
+            {% else %}
+              {% set p35 = ps[((n - 1) * cheap_pct) | int] %}
+              {% set p70 = ps[((n - 1) * normal_pct) | int] %}
+              {% set cheap_max = [[p35, floor_price] | max, ceiling_price] | min %}
+              {% set normal_max = [[p70, ceiling_price] | min, cheap_max] | max %}
+              {{ {
+                'p35': p35,
+                'p70': p70,
+                'cheap_max': cheap_max | round(4),
+                'normal_max': normal_max | round(4),
+                'avg': ((ps | sum) / n) | round(4),
+                'min': ps[0],
+                'max': ps[-1],
+                'interval': (pts[1][0] - pts[0][0]) if n > 1 else 900
+              } }}
+            {% endif %}
+    sensor:
+      - name: Elpris
+        unique_id: nordpool_v3_elpris
+        icon: mdi:flash
+        unit_of_measurement: SEK/kWh
+        state_class: measurement
+        availability: "{{ pts | count > 0 }}"
+        state: >
+          {% set t = now().timestamp() %}
+          {% set ns = namespace(v=none) %}
+          {% for p in pts if p[0] <= t %}
+            {% set ns.v = p[1] %}
+          {% endfor %}
+          {{ ns.v }}
+        attributes:
+          area: "{{ area }}"
+          prices: "{{ pts }}"
+          interval: "{{ th.interval }}"
+          has_tomorrow: "{{ (tomorrow_price | default({}, true)).get(area, []) | count > 0 }}"
+          cheap_max: "{{ th.cheap_max }}"
+          normal_max: "{{ th.normal_max }}"
+          p35: "{{ th.p35 }}"
+          p70: "{{ th.p70 }}"
+          floor: "{{ floor_price }}"
+          ceiling: "{{ ceiling_price }}"
+          avg: "{{ th.avg }}"
+          min: "{{ th.min }}"
+          max: "{{ th.max }}"
+
+  - sensor:
+      - name: Elpris nivå
+        unique_id: nordpool_v3_elpris_niva
+        icon: mdi:speedometer
+        availability: >
+          {{ states('sensor.elpris') | is_number
+             and state_attr('sensor.elpris', 'cheap_max') is number }}
+        state: >
+          {% set p = states('sensor.elpris') | float %}
+          {% set cm = state_attr('sensor.elpris', 'cheap_max') %}
+          {% set nm = state_attr('sensor.elpris', 'normal_max') %}
+          {{ 'CHEAP' if p <= cm else ('NORMAL' if p <= nm else 'EXPENSIVE') }}
+        attributes:
+          current_price: "{{ states('sensor.elpris') | float(none) }}"
+          cheap_max: "{{ state_attr('sensor.elpris', 'cheap_max') }}"
+          normal_max: "{{ state_attr('sensor.elpris', 'normal_max') }}"
+          # Nästa gång nivån byter: {'level': 'EXPENSIVE', 'start': '2026-10-11T16:00:00+02:00'}
+          next_change: >
+            {% set pts = state_attr('sensor.elpris', 'prices') or [] %}
+            {% set cm = state_attr('sensor.elpris', 'cheap_max') | float(0) %}
+            {% set nm = state_attr('sensor.elpris', 'normal_max') | float(0) %}
+            {% set step = state_attr('sensor.elpris', 'interval') | int(900) %}
+            {% set t = now().timestamp() %}
+            {% set ns = namespace(cur=none, res=none) %}
+            {% for p in pts if p[0] + step > t and ns.res is none %}
+              {% set l = 'CHEAP' if p[1] <= cm else ('NORMAL' if p[1] <= nm else 'EXPENSIVE') %}
+              {% if ns.cur is none %}
+                {% set ns.cur = l %}
+              {% elif l != ns.cur %}
+                {% set ns.res = {'level': l, 'start': p[0] | timestamp_local} %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.res }}
