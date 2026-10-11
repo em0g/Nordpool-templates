@@ -17,9 +17,11 @@
  * show_thresholds: false
  * height: 120                # staplarnas höjd i px
  * colors: { cheap: '#13a365', normal: '#e3a512', expensive: '#e5484d' }
+ *
+ * Allt ovan kan också ställas in i den visuella editorn.
  */
 
-const VERSION = '3.0.0';
+const VERSION = '3.1.0';
 
 const DEFAULTS = {
   entity: 'sensor.elpris',
@@ -83,6 +85,18 @@ class NordpoolLevelCard extends HTMLElement {
     this.attachShadow({ mode: 'open' });
     this._width = 0;
     this._geo = null;
+  }
+
+  static async getConfigElement() {
+    // ha-form laddas lat i HA – ladda den via ett inbyggt korts editor om den saknas.
+    if (!customElements.get('ha-form') || !customElements.get('ha-entity-picker')) {
+      try {
+        const helpers = await window.loadCardHelpers?.();
+        const card = await helpers?.createCardElement({ type: 'entities', entities: [] });
+        await card?.constructor?.getConfigElement?.();
+      } catch (e) { /* editorn visar ett meddelande om ha-form saknas */ }
+    }
+    return document.createElement('nordpool-level-card-editor');
   }
 
   static getStubConfig(hass) {
@@ -513,6 +527,192 @@ class NordpoolLevelCard extends HTMLElement {
   }
 }
 
+// ---------- visuell editor ----------
+
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return null;
+  const h = m[1].length === 3 ? m[1].replace(/./g, '$&$&') : m[1];
+  return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+}
+
+function rgbToHex(rgb) {
+  if (!Array.isArray(rgb) || rgb.length < 3) return null;
+  return '#' + rgb.slice(0, 3).map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+}
+
+const sameRgb = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length >= 3 && b.length >= 3 && a.slice(0, 3).every((v, i) => v === b[i]);
+
+const EDITOR_SCHEMA = [
+  { name: 'entity', required: true, selector: { entity: { domain: 'sensor' } } },
+  { name: 'title', selector: { text: {} } },
+  {
+    type: 'grid',
+    name: '',
+    schema: [
+      {
+        name: 'layout',
+        selector: { select: { mode: 'dropdown', options: [
+          { value: 'bars', label: 'Staplar' },
+          { value: 'strip', label: 'Tidslinje-remsa' },
+        ] } },
+      },
+      {
+        name: 'resolution',
+        selector: { select: { mode: 'dropdown', options: [
+          { value: 'hour', label: 'Per timme' },
+          { value: 'quarter', label: 'Per kvart (15 min)' },
+        ] } },
+      },
+      {
+        name: 'unit',
+        selector: { select: { mode: 'dropdown', options: [
+          { value: 'kr', label: 'kr/kWh' },
+          { value: 'öre', label: 'öre/kWh' },
+        ] } },
+      },
+      { name: 'decimals', selector: { number: { min: 0, max: 4, step: 1, mode: 'box' } } },
+      { name: 'cheap_window_hours', selector: { number: { min: 0, max: 12, step: 1, mode: 'box', unit_of_measurement: 'h' } } },
+      { name: 'height', selector: { number: { min: 60, max: 300, step: 10, mode: 'slider', unit_of_measurement: 'px' } } },
+    ],
+  },
+  { name: 'show_thresholds', selector: { boolean: {} } },
+  {
+    type: 'expandable',
+    name: 'colors',
+    title: 'Färger',
+    icon: 'mdi:palette',
+    flatten: true,
+    schema: [
+      {
+        type: 'grid',
+        name: '',
+        schema: LEVELS.map((l) => ({ name: `color_${l.key}`, selector: { color_rgb: {} } })),
+      },
+    ],
+  },
+];
+
+const EDITOR_LABELS = {
+  entity: 'Prissensor',
+  title: 'Rubrik (valfri)',
+  layout: 'Vy',
+  resolution: 'Upplösning',
+  unit: 'Enhet',
+  decimals: 'Decimaler',
+  cheap_window_hours: 'Billigaste fönster',
+  height: 'Diagramhöjd',
+  show_thresholds: 'Visa nivågränser som linjer',
+  colors: 'Färger',
+  color_cheap: 'Billigt',
+  color_normal: 'Normalt',
+  color_expensive: 'Dyrt',
+};
+
+const EDITOR_HELPERS = {
+  entity: 'sensor.elpris från nordpool_templates.yaml',
+  layout: 'Kan också växlas med ikonen i kortet',
+  decimals: 'Tomt = 2 för kr, 0 för öre',
+  cheap_window_hours: '0 döljer "Billigast X h"',
+};
+
+// Nycklar som editorn hanterar – övriga nycklar i konfigurationen lämnas orörda.
+const EDITOR_KEYS = ['entity', 'title', 'layout', 'resolution', 'unit', 'decimals', 'cheap_window_hours', 'height', 'show_thresholds', 'colors'];
+
+class NordpoolLevelCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+  }
+
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (this._form) this._form.hass = hass;
+  }
+
+  _formData() {
+    const c = this._config;
+    this._shownColors = {};
+    const data = {
+      entity: c.entity ?? '',
+      title: c.title ?? '',
+      layout: c.layout ?? DEFAULTS.layout,
+      resolution: c.resolution ?? DEFAULTS.resolution,
+      unit: c.unit === 'ore' ? 'öre' : (c.unit ?? DEFAULTS.unit),
+      decimals: c.decimals,
+      cheap_window_hours: c.cheap_window_hours ?? DEFAULTS.cheap_window_hours,
+      height: c.height ?? DEFAULTS.height,
+      show_thresholds: c.show_thresholds ?? DEFAULTS.show_thresholds,
+    };
+    LEVELS.forEach(({ key }) => {
+      const rgb = hexToRgb(c.colors?.[key]) || hexToRgb(DEFAULT_COLORS[key]);
+      this._shownColors[key] = rgb;
+      data[`color_${key}`] = rgb;
+    });
+    return data;
+  }
+
+  _render() {
+    if (!this._config) return;
+    if (!this._form) {
+      this.shadowRoot.innerHTML = `
+        <style>
+          .missing { color: var(--secondary-text-color); font-size: .9rem; padding: 8px 0; }
+          .missing[hidden] { display: none; }
+        </style>
+        <div class="missing" hidden>Formuläret kunde inte laddas – använd kodredigeraren (YAML) i stället.</div>`;
+      this._form = document.createElement('ha-form');
+      this._form.computeLabel = (s) => EDITOR_LABELS[s.name] ?? s.name;
+      this._form.computeHelper = (s) => EDITOR_HELPERS[s.name];
+      this._form.addEventListener('value-changed', (e) => this._valueChanged(e));
+      this.shadowRoot.appendChild(this._form);
+      const missing = this.shadowRoot.querySelector('.missing');
+      setTimeout(() => { missing.hidden = !!customElements.get('ha-form'); }, 2000);
+    }
+    if (this._hass) this._form.hass = this._hass;
+    this._form.schema = EDITOR_SCHEMA;
+    this._form.data = this._formData();
+  }
+
+  _valueChanged(ev) {
+    ev.stopPropagation();
+    const v = ev.detail?.value || {};
+    const old = this._config;
+    const out = {};
+    Object.keys(old).forEach((k) => { if (!EDITOR_KEYS.includes(k)) out[k] = old[k]; });
+    out.type = old.type || 'custom:nordpool-level-card';
+    out.entity = v.entity || old.entity || DEFAULTS.entity;
+    if (typeof v.title === 'string' && v.title.trim()) out.title = v.title;
+    ['layout', 'resolution', 'unit', 'cheap_window_hours', 'height', 'show_thresholds'].forEach((k) => {
+      if (v[k] !== undefined && v[k] !== null && v[k] !== '' && v[k] !== DEFAULTS[k]) out[k] = v[k];
+    });
+    if (v.decimals !== undefined && v.decimals !== null && v.decimals !== '' && isFinite(v.decimals)) out.decimals = Number(v.decimals);
+
+    const colors = {};
+    LEVELS.forEach(({ key }) => {
+      const rgb = v[`color_${key}`];
+      if (sameRgb(rgb, this._shownColors?.[key])) {
+        // oförändrad i formuläret – behåll originalvärdet (t.ex. ett namngivet färgvärde)
+        if (old.colors?.[key] !== undefined) colors[key] = old.colors[key];
+        return;
+      }
+      const hex = rgbToHex(rgb);
+      if (hex && hex !== DEFAULT_COLORS[key].toLowerCase()) colors[key] = hex;
+    });
+    if (Object.keys(colors).length) out.colors = colors;
+
+    this._config = out;
+    this._shownColors = {};
+    LEVELS.forEach(({ key }) => { this._shownColors[key] = v[`color_${key}`]; });
+    this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: out }, bubbles: true, composed: true }));
+  }
+}
+
 const STYLE = `
   :host { display: block; }
   ha-card {
@@ -581,11 +781,13 @@ const STYLE = `
 `;
 
 if (!customElements.get('nordpool-level-card')) customElements.define('nordpool-level-card', NordpoolLevelCard);
+if (!customElements.get('nordpool-level-card-editor')) customElements.define('nordpool-level-card-editor', NordpoolLevelCardEditor);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'nordpool-level-card',
   name: 'Nordpool prisnivå',
   description: 'Kompakt elpriskort med nivåerna Billigt / Normalt / Dyrt',
   preview: true,
+  documentationURL: 'https://github.com/em0g/Nordpool-templates/tree/main/3.0',
 });
 console.info(`%c NORDPOOL-LEVEL-CARD %c ${VERSION} `, 'background:#13a365;color:#fff', '');

@@ -50,7 +50,11 @@ Sensorn uppdateras var 15:e minut och vid omstart.
 2. *Inställningar → Kontrollpaneler → ⋮ → Resurser → Lägg till resurs*
    - URL: `/local/nordpool-level-card.js`
    - Typ: *JavaScript-modul*
-3. Ladda om webbläsaren (töm gärna cachen) och lägg till kortet:
+3. Ladda om webbläsaren (töm gärna cachen) och lägg till kortet.
+
+**Visuellt:** *Redigera kontrollpanel → + Lägg till kort*, sök på **Nordpool prisnivå**. Kortet väljer automatiskt `sensor.elpris`. Allt kan sedan ställas in i formuläret med live-förhandsvisning bredvid: sensor, rubrik, vy, upplösning, enhet, decimaler, billigaste fönster, diagramhöjd, gränslinjer och färger (under *Färger*). Editorn sparar bara värden som skiljer sig från standard, så YAML:en hålls kort.
+
+**Eller med YAML:**
 
 ```yaml
 type: custom:nordpool-level-card
