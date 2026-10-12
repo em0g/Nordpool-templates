@@ -30,12 +30,17 @@ Kortet färgar staplarna med samma `cheap_max` och `normal_max` som `sensor.elpr
 
 ### 1. Templates
 
-1. Kopiera `nordpool_templates.yaml` till `/config/` och lägg till den som package i `configuration.yaml`:
+1. Kopiera `nordpool_templates.yaml` till `/config/` (samma mapp som `configuration.yaml`). Lägg sedan till `packages:` **inuti ditt befintliga `homeassistant:`-block**, med två mellanslags indrag precis som de andra raderna där:
    ```yaml
    homeassistant:
+     name: Home
+     # ... dina övriga inställningar ...
      packages:
        elpris: !include nordpool_templates.yaml
    ```
+   - Skapa inte ett andra `homeassistant:`-block, och lägg inte `packages:` under någon annan nyckel (t.ex. `input_select:`).
+   - Ett befintligt `template:` i `configuration.yaml` kan vara kvar, eftersom HA slår ihop det med det som finns i paketfilen.
+   - Felet `Invalid config for integration input_select ... 'input_select.packages.elpris'` (eller motsvarande för en annan integration) betyder att `packages:` ligger under fel nyckel.
 2. Ändra inställningarna i det första `variables`-steget i filen:
    - `config_entry`: Nord Pool-integrationens id. Du hittar det under *Utvecklarverktyg → Åtgärder → `nordpool.get_prices_for_date`*: välj integrationen, växla till YAML-läge och kopiera värdet.
    - `area` / `currency`: t.ex. `SE3` / `SEK`
